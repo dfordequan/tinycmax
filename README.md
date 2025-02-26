@@ -44,7 +44,7 @@ python show.py
 python train.py
 ```
 - Logging to Weights & Biases:
-    - Create `logs` folder in repo root
+    - Check you have a `logs` folder in repo root
     - Run command with `logger=wandb logger.notes="some notes"` added
 - Visualize in Rerun:
     - Run `rerun` in separate window (with environment activated)
@@ -56,8 +56,8 @@ python train.py
 python validate.py runid=<run_id>
 ```
 - Run selection:
-    - Get `run_id` from Weights & Biases
-    - Add `checkpoint=<checkpoint_id>` to select specific checkpoint
+    - Get `run_id` from Weights & Biases (e.g. `eio65zrj`)
+    - Add `checkpoint=<checkpoint_id>` to select specific checkpoint (e.g. `latest` (default) or `v0`, `v1`, etc.)
     - To use a pre-trained model, leave [`wandb.yaml`](config/logger/wandb.yaml) as-is and provide a `run_id` and `checkpoind_id` from our [Weights & Biases](https://wandb.ai/huizerd/tinycmax)
 - Visualize in Rerun: same as above
 
