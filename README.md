@@ -44,6 +44,7 @@ python show.py
 python train.py
 ```
 - Logging to Weights & Biases:
+    - Follow the [quickstart](https://docs.wandb.ai/quickstart/): sign up and run `wandb login` in the command line
     - Check you have a `logs` folder in repo root
     - Run command with `logger=wandb logger.notes="some notes"` added
 - Visualize in Rerun:
