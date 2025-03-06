@@ -1,5 +1,6 @@
 _target_: lightning.Trainer
 accelerator: gpu
+devices: [0]  # specify which gpu id  to use
 max_epochs: 100
 check_val_every_n_epoch: 10
 limit_val_batches: null  # evaluate on all validation data; set to int for N batches

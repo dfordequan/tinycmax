@@ -2,7 +2,7 @@ visualizer:
   _target_: tinycmax.callbacks.LiveVisualizer
   app_id: ${...name}
   server: 100.127.176.98:9876  # replace with your ip
-  web: false
+  web: true  # if false then use server ip above
   compression: png  # jpeg, png, false (to turn off)
   time_window: ${...datamodule.time_window}
 

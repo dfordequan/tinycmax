@@ -48,9 +48,11 @@ python train.py
     - Check you have a `logs` folder in repo root
     - Run command with `logger=wandb logger.notes="some notes"` added
 - Visualize in Rerun:
-    - Run `rerun` in separate window (with environment activated)
-    - Set `server=127.0.0.1:9876` in [`live_vis.yaml`](config/callbacks/live_vis.yaml)
     - Run command with `+callbacks=live_vis` added
+    - Opens web version by default
+    - Better performance:
+        - Run `rerun` in separate window (with environment activated)
+        - Set `server=127.0.0.1:9876` in [`live_vis.yaml`](config/callbacks/live_vis.yaml)
 
 ### Validation
 ```
