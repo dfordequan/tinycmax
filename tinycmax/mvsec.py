@@ -2,19 +2,18 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+import zipfile
 
 import cv2
 from dotmap import DotMap
+from gdown import download_folder, download
 import h5py
 import hdf5plugin
 from lightning import LightningDataModule
 import numpy as np
 from numpy.lib import recfunctions as rfn
-import pandas as pd
-from rich.progress import track
 import torch
 from torch.utils.data import ConcatDataset, DataLoader
-from torchvision.datasets.utils import download_and_extract_archive
 import yaml
 
 from tinycmax.data_utils import (
@@ -27,8 +26,8 @@ from tinycmax.data_utils import (
 
 
 @dataclass
-class UzhFpvSequence:
-    root_dir: Path
+class MvsecSequence:
+    root_dir: str
     recording: str
     time_window: float | int | None
     count_window: int | None
@@ -38,24 +37,63 @@ class UzhFpvSequence:
     crop: tuple[int, ...] | None = None  # height, width or top, left, bottom, right
     rectify: bool = False
     augmentations: list[str] | None = None
+    gt: list[str] | None = None
 
     def __post_init__(self):
         # checks
         # TODO: implement count window
         assert not (self.time_window is not None and self.count_window is not None)
         assert self.count_window is None
+        assert not (self.augmentations is not None and self.gt)  # no augmentations on gt
 
-        # data
+        # defaults
+        self.root_dir = Path(self.root_dir)
+        self.sensor_size = (260, 346)  # height, width
+
+        # make paths
+        recording = self.recording[:-1]  # remove trailing number
+        paths = {
+            "data": self.root_dir / recording / f"{self.recording}_data.hdf5",
+            "gt": self.root_dir / recording / f"{self.recording}_gt.hdf5",
+            "rect_map_x": self.root_dir / recording / "calib" / f"{recording}_left_x_map.txt",
+            "rect_map_y": self.root_dir / recording / "calib" / f"{recording}_left_y_map.txt",
+            "calibration": self.root_dir / recording / "calib" / f"camchain-imucam-{recording}.yaml",
+        }
+        assert all(p.exists() for p in paths.values())
+
         # open large h5 files only once
-        self.fs = h5py.File(self.root_dir / f"{self.recording}.h5", "r")
+        self.fs = dict(
+            data=h5py.File(paths["data"], "r"),
+            gt=h5py.File(paths["gt"], "r"),
+        )
 
-        # attributes
-        self.sensor_size = tuple(self.fs.attrs["sensor_size"])  # height, width
-        self.fw_rect_map = self.fs["fw_rect_map"][:]
-        self.bw_rect_map = self.fs["bw_rect_map"][:]
+        # forward rectification map
+        # distorted -> rectified coords
+        # provided map, easier than backward, but gives lines in frames due to nearest neighbor
+        rect_map_x = np.loadtxt(paths["rect_map_x"])
+        rect_map_y = np.loadtxt(paths["rect_map_y"])
+        self.fw_rect_map = np.stack([rect_map_x, rect_map_y], axis=-1)  # x_rect, y_rect = rect_map[y, x].T
+
+        # backward rectification/undistortion map
+        # rectified/undistorted -> distorted coords
+        # more work, but prevents lines in accumulated event frames
+        with open(paths["calibration"], "r") as f:
+            cam_to_cam = yaml.safe_load(f)
+        fx, fy, cx, cy = cam_to_cam["cam0"]["intrinsics"]
+        K_dist = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+        self.K_rect = np.array(cam_to_cam["cam0"]["projection_matrix"])[:, :3]
+        R_rect = np.array(cam_to_cam["cam0"]["rectification_matrix"])
+        dist_coeffs = np.array(cam_to_cam["cam0"]["distortion_coeffs"])
+        resolution = cam_to_cam["cam0"]["resolution"]  # xy
+        rect_map_x, rect_map_y = cv2.fisheye.initUndistortRectifyMap(
+            K_dist, dist_coeffs, R_rect, self.K_rect, resolution, cv2.CV_32F
+        )
+        self.bw_rect_map = np.stack([rect_map_x, rect_map_y], axis=-1)  # needs to be .fisheye!
 
         # get duration of recording
-        self.t0, self.tk = self.fs["events/t"][[0, -1]]
+        # don't get full t because of memory usage
+        # convert to us
+        self.t0, self.tk = (self.fs["data"]["davis/left/events"][[0, -1], 2] * 1e6).astype(np.int64)
         if self.time is not None:
             t0, tk = self.time
             t0 = t0 + self.t0 if t0 is not None else self.t0
@@ -72,7 +110,7 @@ class UzhFpvSequence:
             self.crop_corners[3] - self.crop_corners[1],
         )
 
-        # mapping from chunks to steps
+        # mapping from chunks to single slices
         # match seq_len if given
         self.chunk_size = self.seq_len if self.seq_len is not None else self.chunk_size
         self.chunk_map = batched(range(len(self.t_start)), self.chunk_size)
@@ -133,15 +171,15 @@ class UzhFpvSequence:
         # go over slices
         frames, auxs, targets = [], DotMap(), DotMap()
         for i in chunk:
-            # convert to indices
-            start = bisect_left(self.fs["events/t"], self.t_start[i])
-            end = bisect_left(self.fs["events/t"], self.t_end[i])
+            # convert to indices (from us to s again)
+            start = bisect_left(self.fs["data"]["davis/left/events"], self.t_start[i] / 1e6, key=lambda x: x[2])
+            end = bisect_left(self.fs["data"]["davis/left/events"], self.t_end[i] / 1e6, key=lambda x: x[2])
 
             # get events as list
-            t = self.fs["events/t"][start:end]  # uint32
-            y = self.fs["events/y"][start:end]  # uint16
-            x = self.fs["events/x"][start:end]  # uint16
-            p = self.fs["events/p"][start:end]  # uint8 in {0, 1}
+            t = self.fs["data"]["davis/left/events"][start:end, 2]  # float64, s
+            y = self.fs["data"]["davis/left/events"][start:end, 1]  # float64
+            x = self.fs["data"]["davis/left/events"][start:end, 0]  # float64
+            p = self.fs["data"]["davis/left/events"][start:end, 3]  # float64 in {-1, 1}
 
             # rectify list: forward rectification
             if self.rectify:
@@ -165,10 +203,10 @@ class UzhFpvSequence:
             lst["x"] -= left
 
             # make into event count frame
-            # use unrectified coordinates
+            # use unrectified coordinates, convert p to {0, 1}
             y = torch.from_numpy(y.astype(np.int64))
             x = torch.from_numpy(x.astype(np.int64))
-            p = torch.from_numpy(p.astype(np.int64))
+            p = torch.from_numpy(((p + 1) // 2).astype(np.int64))
             frame = torch.zeros(2, *self.sensor_size, dtype=torch.int64)  # torch is faster
             frame.index_put_((p, y, x), torch.ones_like(p), accumulate=True)
 
@@ -188,15 +226,32 @@ class UzhFpvSequence:
                 lst = np.array([], dtype=lst.dtype)
                 frame = torch.zeros_like(frame)
 
-            # format list of events: normalize time, polarity to {-1, 1}
+            # format list of events
             # after cropping, else normalized timestamp not correct
+            # only normalize time; polarity is already in {-1, 1}
             lst["t"] = (lst["t"] - lst["t"][0]) / (lst["t"][-1] - lst["t"][0]) if len(lst) else lst["t"]
-            lst["p"] = lst["p"] * 2 - 1
 
             # append
             frames.append(frame)
             auxs.events += [lst]
             auxs.counts += [len(lst)]
+
+            # targets
+
+            # TODO: flow (and visualization)
+
+            # depth
+            if self.gt and "depth" in self.gt:
+                start = bisect_left(self.fs["gt"]["davis/left/depth_image_rect_ts"], self.t_start[i] / 1e6)
+                end = bisect_left(self.fs["gt"]["davis/left/depth_image_rect_ts"], self.t_end[i] / 1e6)
+                if start >= end:
+                    end = start + 1  # take latest
+                gt_depth_id = start + 1  # to prevent 0
+                gt_depth = self.fs["gt"]["davis/left/depth_image_rect"][start:end]  # keep time dim as channel
+                gt_depth = gt_depth[..., top:bottom, left:right]  # crop
+                gt_depth[np.isnan(gt_depth)] = 0  # replace nans with 0
+                targets.depth += [torch.from_numpy(gt_depth.astype(np.float32))]
+                targets.depth_id += [torch.tensor(gt_depth_id)]
 
         # stack and pad
         frames = torch.stack(frames)
@@ -224,6 +279,18 @@ class UzhFpvSequence:
             frames = frames.flip(3)
             auxs.events[..., 2] = (right - left - 2) - auxs.events[..., 2]
 
+        # adapt camera matrices to crop and augmentations
+        K_rect = self.K_rect.copy()
+        K_rect[0, 2] -= left
+        K_rect[1, 2] -= top
+        if "vertical" in self.augmentation:
+            K_rect[1, 2] = (bottom - top - 1) - K_rect[1, 2]
+        if "horizontal" in self.augmentation:
+            K_rect[0, 2] = (right - left - 1) - K_rect[0, 2]
+        inv_K_rect = np.linalg.inv(K_rect)
+        K_rect = torch.from_numpy(K_rect.astype(np.float32))
+        inv_K_rect = torch.from_numpy(inv_K_rect.astype(np.float32))
+
         # return static dotmap
         sample = DotMap(
             frames=frames.float(),
@@ -231,13 +298,18 @@ class UzhFpvSequence:
             targets=targets,
             recording=self.recording,
             eofs=[i == len(self.t_start) - 1 for i in chunk],
+            K_rect=K_rect,
+            inv_K_rect=inv_K_rect,
             _dynamic=False,
         )
 
         return sample
 
 
-class UzhFpvDataModule(LightningDataModule):
+class MvsecDataModule(LightningDataModule):
+
+    gt = ["depth"]
+
     def __init__(
         self,
         root_dir,
@@ -273,160 +345,55 @@ class UzhFpvDataModule(LightningDataModule):
         self.download = download
 
     def prepare_data(self):
-        # recordings
-        # now only indoor forward, but there's also 45deg and outdoor
-        # time in microseconds to skip parts with drone on the ground
-        recordings = [
-            ("indoor_forward_3_davis_with_gt", (30e6, 82e6)),
-            ("indoor_forward_5_davis_with_gt", (30e6, 140e6)),
-            ("indoor_forward_6_davis_with_gt", (30e6, 67e6)),
-            ("indoor_forward_7_davis_with_gt", (30e6, 105e6)),
-            ("indoor_forward_8_davis", (30e6, 157e6)),
-            ("indoor_forward_9_davis_with_gt", (30e6, 77e6)),
-            ("indoor_forward_10_davis_with_gt", (30e6, 73e6)),
-            ("indoor_forward_11_davis", (30e6, 81e6)),
-            ("indoor_forward_12_davis", (20e6, 50e6)),
-        ]
-
-        # download data
         if self.download:
-            # urls
-            base_url_rec = "http://rpg.ifi.uzh.ch/datasets/uzh-fpv-newer-versions/v3/"
-            base_url_calib = "http://rpg.ifi.uzh.ch/datasets/uzh-fpv/calib/"
+            # event and gt data in h5
+            # parent: https://drive.google.com/drive/folders/1gDy2PwVOu_FPOsEZjojdWEB2ZHmpio8D
+            urls = [
+                ("indoor_flying", "https://drive.google.com/drive/folders/1CEuvvahWQntNIqXWZhXu_WknsTLm4Sum"),
+                ("outdoor_day", "https://drive.google.com/drive/folders/1WUapfrd2DNQNuxPt9IqUHCcPCPKLiNvT"),
+            ]
 
-            # go over recordings
-            for rec, _ in recordings:
-                name = ("_").join(rec.split("_")[:2])  # eg indoor_forward
+            # download if not there
+            for name, url in urls:
+                (self.root_dir / name).mkdir(exist_ok=True, parents=True)
+                files = download_folder(url, output=str(self.root_dir / name), skip_download=True)
+                for f in files:
+                    id, _, local_path = f
+                    if not Path(local_path).exists():
+                        try:
+                            download(id=id, output=local_path)
+                        except Exception as e:
+                            print(e)
+                    if ".zip" in local_path:
+                        if not (self.root_dir / name / "calib").exists():
+                            with zipfile.ZipFile(local_path, "r") as f:
+                                f.extractall(self.root_dir / name / "calib")
+                        (self.root_dir / name / f"{name}_calib.zip").unlink()
 
-                # download raw data
-                raw_dir = self.root_dir / name
-                raw_dir.mkdir(parents=True, exist_ok=True)
-                if not (raw_dir / rec).exists():  # recording
-                    download_and_extract_archive(f"{base_url_rec}{rec}.zip", raw_dir / rec)
-                    (raw_dir / rec / f"{rec}.zip").unlink()
-                if not (raw_dir / "calib").exists():  # calibration
-                    download_and_extract_archive(f"{base_url_calib}{name}_calib_davis.zip", raw_dir / "calib")
-                    (raw_dir / "calib" / f"{name}_calib_davis.zip").unlink()
+        # all recordings
+        # recordings = [
+        #     ("indoor_flying1", None),
+        #     ("indoor_flying2", None),
+        #     ("indoor_flying3", None),
+        #     ("indoor_flying4", None),
+        #     ("outdoor_day1", None),
+        #     ("outdoor_day2", None),
+        # ]
 
-                # process to h5
-                if not (self.root_dir / f"{rec}.h5").exists():
-                    # handy
-                    def append(dataset, data):
-                        n = len(data)
-                        if n == 0:
-                            return
-                        dataset.resize(len(dataset) + n, axis=0)
-                        dataset[-n:] = data
+        # train on outdoor_day2, validate on part of outdoor_day1 (default)
+        train_recordings = (
+            [("outdoor_day2", None)] if self.train_recordings is None else self.train_recordings
+        )  # override
+        val_recordings = [("outdoor_day1", (222.4, 240.4))] if self.val_recordings is None else self.val_recordings
 
-                    # store
-                    with h5py.File(self.root_dir / f"{rec}.h5", "w") as h5f:
-                        # make datasets
-                        h5f.create_dataset(
-                            "events/t",
-                            (0,),
-                            maxshape=(None,),
-                            chunks=True,
-                            dtype=np.uint32,
-                            compression=hdf5plugin.Zstd(),
-                        )
-                        h5f.create_dataset(
-                            "events/y",
-                            (0,),
-                            maxshape=(None,),
-                            chunks=True,
-                            dtype=np.uint16,
-                            compression=hdf5plugin.Zstd(),
-                        )
-                        h5f.create_dataset(
-                            "events/x",
-                            (0,),
-                            maxshape=(None,),
-                            chunks=True,
-                            dtype=np.uint16,
-                            compression=hdf5plugin.Zstd(),
-                        )
-                        h5f.create_dataset(
-                            "events/p",
-                            (0,),
-                            maxshape=(None,),
-                            chunks=True,
-                            dtype=np.uint8,
-                            compression=hdf5plugin.Zstd(),
-                        )
-
-                        # convert events
-                        events = pd.read_csv(
-                            raw_dir / rec / "events.txt",
-                            delimiter=" ",
-                            skiprows=1,
-                            names=["t", "x", "y", "p"],
-                            chunksize=1e6,
-                        )
-                        t0 = None
-                        for df in track(events, description=f"Converting {rec} to h5..."):
-                            if t0 is None:
-                                t0 = df["t"].iloc[0]
-                            df["t"] = (df["t"] - t0) * 1e6  # to us
-                            append(h5f["events/t"], df["t"].values.astype(np.uint32))
-                            append(h5f["events/y"], df["y"].values)
-                            append(h5f["events/x"], df["x"].values)
-                            append(h5f["events/p"], df["p"].values)
-
-                        # precompute backward rectification
-                        # kalibr equidistant = .fisheye
-                        with open(
-                            raw_dir / "calib" / f"{name}_calib_davis" / f"camchain-..{name}_calib_davis_cam.yaml", "r"
-                        ) as f:
-                            cam_to_cam = yaml.safe_load(f)
-                        fx, fy, cx, cy = cam_to_cam["cam0"]["intrinsics"]
-                        resolution = cam_to_cam["cam0"]["resolution"]  # xy
-                        K_dist = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
-                        dist_coeffs = np.array(cam_to_cam["cam0"]["distortion_coeffs"])
-                        K_rect = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-                            K_dist, dist_coeffs, resolution, np.eye(3), balance=1
-                        )
-                        rect_map_x, rect_map_y = cv2.fisheye.initUndistortRectifyMap(
-                            K_dist, dist_coeffs, np.eye(3), K_rect, resolution, cv2.CV_32F
-                        )
-                        bw_rect_map = np.stack([rect_map_x, rect_map_y], axis=-1)
-
-                        # precompute forward rectification
-                        w, h = resolution
-                        grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
-                        original_coords = np.stack([grid_x, grid_y], axis=-1).reshape(-1, 1, 2).astype(np.float32)
-                        rect_coords = cv2.fisheye.undistortPoints(original_coords, K_dist, dist_coeffs, P=K_rect)
-                        fw_rect_map = rect_coords.reshape(h, w, 2)
-
-                        # store fw/bw rect maps as datasets (too big for attrs)
-                        h5f.create_dataset(
-                            "fw_rect_map",
-                            data=fw_rect_map,
-                            chunks=True,
-                            dtype=np.float32,
-                            compression=hdf5plugin.Zstd(),
-                        )
-                        h5f.create_dataset(
-                            "bw_rect_map",
-                            data=bw_rect_map,
-                            chunks=True,
-                            dtype=np.float32,
-                            compression=hdf5plugin.Zstd(),
-                        )
-
-                        # store some useful attributes
-                        h5f.attrs["sensor_size"] = (260, 346)
-                        h5f.attrs["K_rect"] = K_rect
-
-        # by default: all recordings, clipped to airborne parts
-        if self.train_recordings is None:
-            self.train_recordings = recordings.copy()
-        if self.val_recordings is None:
-            self.val_recordings = recordings.copy()
+        # store for building datasets later
+        self.train_recordings = train_recordings
+        self.val_recordings = val_recordings
 
     def setup(self, stage):
         if stage == "fit":
             train_sequence = partial(
-                UzhFpvSequence,
+                MvsecSequence,
                 root_dir=self.root_dir,
                 time_window=self.time_window,
                 count_window=self.count_window,
@@ -447,12 +414,13 @@ class UzhFpvDataModule(LightningDataModule):
 
         if stage in ["fit", "validate"]:
             val_sequence = partial(
-                UzhFpvSequence,
+                MvsecSequence,
                 root_dir=self.root_dir,
                 time_window=self.time_window,
                 count_window=self.count_window,
                 crop=self.val_crop,
-                rectify=self.rectify,
+                rectify=True,
+                gt=self.gt,
             )
             for i, rec in enumerate(self.val_recordings):
                 if isinstance(rec, str):
@@ -460,6 +428,9 @@ class UzhFpvDataModule(LightningDataModule):
                 self.val_recordings[i] = rec
             self.val_dataset = ConcatDataset([val_sequence(recording=r, time=t) for r, t in self.val_recordings])
             self.val_frame_shape = (1, 2, *self.val_dataset.datasets[0].frame_shape)
+
+        elif stage == "test":
+            raise NotImplementedError
 
     def train_dataloader(self):
         sampler = ConcatBatchSampler(self.train_dataset, self.batch_size, shuffle=self.shuffle)
@@ -483,7 +454,7 @@ if __name__ == "__main__":
 
     # get config
     with initialize(config_path="../config/datamodule", version_base=None):
-        config = compose(config_name="uzh_fpv", overrides=["download=true"])
+        config = compose(config_name="mvsec", overrides=["download=true"])
 
     # download data
     datamodule = instantiate(config)

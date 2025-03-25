@@ -1,0 +1,17 @@
+_target_: tinycmax.mvsec.MvsecDataModule
+root_dir: data/mvsec
+time_window: 20000  # us
+count_window: null  # mutually exclusive with time_window
+train_seq_len: 100
+train_crop: [0, 1, 192, 345]  # [2, 1, 258, 345] for /8; hw for random, tlbr or null for fixed
+train_recordings:
+  - [outdoor_day2, [45e6, 650e6]]
+val_crop: [0, 1, 192, 345]  # [0, 1, 192, 345] for only above car bonnet
+val_recordings:
+  - [outdoor_day1, null]  # full seq instead of 222.4s-240.4s
+rectify: true
+augmentations: [flip_pol, flip_lr]
+batch_size: 8
+shuffle: true
+num_workers: 8
+download: false  # don't check downloads
