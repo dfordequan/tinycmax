@@ -65,19 +65,8 @@ python validate.py runid=<run_id>
 - Visualize in Rerun: same as above
 
 ### Generating videos
-In conda:
 ```
-python validate.py runid=rb5gp4fv +callbacks=image_log +datamodule.val_recordings="[[indoor_forward_11_davis,[53e6,63e6]]]"
-```
-Outside of conda:
-```
-cd logs/images/validate_rb5gp4fv_latest
-
-# gif
-ffmpeg -framerate 50 -i input_events/%05d.png -framerate 50 -i pred_flow/%05d.png -framerate 50 -i rsat_accumulated_events/%05d.png -framerate 50 -i rsat_image_warped_events_t/%05d.png -filter_complex "[0:v][1:v][2:v][3:v]hstack=inputs=4,scale=640:-1:flags=lanczos[v]" -map "[v]" -y output.gif
-
-# mp4
-ffmpeg -framerate 100 -i input_events/%05d.png -framerate 100 -i pred_flow/%05d.png -framerate 100 -i rsat_accumulated_events/%05d.png -framerate 100 -i rsat_image_warped_events_t/%05d.png -filter_complex "[0:v][1:v][2:v][3:v]hstack=inputs=4[v]" -map "[v]" -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -y output.mp4
+python validate.py runid=rb5gp4fv +callbacks=file_log +datamodule.val_recordings="[[indoor_forward_11_davis,[53e6,63e6]]]"
 ```
 
 ## To do

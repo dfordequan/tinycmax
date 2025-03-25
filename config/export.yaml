@@ -1,0 +1,15 @@
+defaults:
+  - overrides
+  - hydra: no_logging
+  - _self_
+
+wandb:
+  entity: Huizerd
+  project: tinycmax
+
+name: ${runid}_${checkpoint}
+runid: ???
+checkpoint: latest
+save_dir: checkpoints
+
+deletes: []

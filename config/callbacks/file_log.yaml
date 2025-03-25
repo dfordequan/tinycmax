@@ -3,4 +3,5 @@ visualizer:
   root_dir: logs/images/${...name}
   keys: [input_events, pred_flow, rsat_accumulated_events, rsat_image_warped_events_t]
   image_format: png
+  video_format: [mp4, 100]  # [format (mp4 or gif), fps]; null for nothing
   time_window: ${...datamodule.time_window}

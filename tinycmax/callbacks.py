@@ -38,5 +38,8 @@ class LiveVisualizer(Visualizer):
 
 class FileLogger(Visualizer):
 
-    def __init__(self, root_dir, keys, image_format, time_window):
-        self.visualizer = FileVisualizer(root_dir, keys, image_format, time_window)
+    def __init__(self, root_dir, keys, image_format, video_format, time_window):
+        self.visualizer = FileVisualizer(root_dir, keys, image_format, video_format, time_window)
+
+    def on_validation_end(self, trainer, litmodule):
+        self.visualizer.save_videos()
