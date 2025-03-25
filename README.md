@@ -49,10 +49,12 @@ python train.py
     - Run command with `logger=wandb logger.notes="some notes"` added
 - Visualize in Rerun:
     - Run command with `+callbacks=live_vis` added
-    - Opens web version by default
-    - Better performance:
+    - Live visualization:
         - Run `rerun` in separate window (with environment activated)
-        - Set `server=127.0.0.1:9876` in [`live_vis.yaml`](config/callbacks/live_vis.yaml)
+        - Set IP (e.g. `server=127.0.0.1:9876`) in [`live_vis.yaml`](config/callbacks/live_vis.yaml)
+    - Save to file:
+        - Set `mode=save` in [`live_vis.yaml`](config/callbacks/live_vis.yaml) to log to an `.rrd` file
+        - Download file, then open in Rerun locally to visualize
 
 ### Validation
 ```
