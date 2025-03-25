@@ -1,0 +1,124 @@
+name: ${runid}_${checkpoint}
+stage: train
+logger:
+  notes: linear warp
+  entity: Huizerd
+  project: tinycmax
+  _target_: lightning.pytorch.loggers.WandbLogger
+  save_dir: logs
+  log_model: all
+network:
+  scaling: 32
+  _target_: tinycmax.network.WrappedFlowNetwork
+  _convert_: object
+  final_bias: true
+  padding_mode: reflect
+  activation_fn:
+    _target_: torch.nn.ReLU
+    _partial_: true
+  memory_channels: 64
+  decoder_channels: 64
+  encoder_channels: 64
+trainer:
+  _target_: lightning.Trainer
+  profiler: null
+  benchmark: false
+  precision: 32
+  max_epochs: 100
+  accelerator: gpu
+  deterministic: false
+  detect_anomaly: false
+  limit_val_batches: null
+  log_every_n_steps: 10
+  num_sanity_val_steps: 0
+  check_val_every_n_epoch: 10
+loss_fns:
+  train:
+    cmax:
+      base: 10
+      warp: linear
+      _target_: tinycmax.cmax.ContrastMaximization
+      accumulation_window: 10
+  validate:
+    rsat:
+      base: 10
+      warp: linear
+      _target_: tinycmax.cmax.RatioSquaredAvgTimestamps
+      accumulation_window: 10
+callbacks:
+  progress:
+    _target_: lightning.pytorch.callbacks.RichProgressBar
+    refresh_rate: 1
+  checkpoint:
+    dirpath: null
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    save_on_train_epoch_end: false
+litmodule:
+  _target_: tinycmax.litmodule.Train
+  compile_network: reduce-overhead
+optimizer:
+  lr: 0.0001
+  _target_: torch.optim.Adam
+  _partial_: true
+  gradient_clip_val: 1
+scheduler: null
+datamodule:
+  rectify: false
+  shuffle: true
+  _target_: tinycmax.uzh_fpv.UzhFpvDataModule
+  download: false
+  root_dir: data/uzh_fpv
+  val_crop:
+  - 2
+  - 1
+  - 258
+  - 345
+  batch_size: 8
+  train_crop:
+  - 128
+  - 128
+  num_workers: 8
+  time_window: 10000
+  count_window: null
+  augmentations:
+  - flip_t
+  - flip_pol
+  - flip_ud
+  - flip_lr
+  train_seq_len: 100
+  val_recordings:
+  - - indoor_forward_11_davis
+    - - 30000000.0
+      - 81000000.0
+  train_recordings:
+  - - indoor_forward_3_davis_with_gt
+    - - 30000000.0
+      - 82000000.0
+  - - indoor_forward_5_davis_with_gt
+    - - 30000000.0
+      - 140000000.0
+  - - indoor_forward_6_davis_with_gt
+    - - 30000000.0
+      - 67000000.0
+  - - indoor_forward_7_davis_with_gt
+    - - 30000000.0
+      - 105000000.0
+  - - indoor_forward_8_davis
+    - - 30000000.0
+      - 157000000.0
+  - - indoor_forward_9_davis_with_gt
+    - - 30000000.0
+      - 77000000.0
+  - - indoor_forward_10_davis_with_gt
+    - - 30000000.0
+      - 73000000.0
+  - - indoor_forward_12_davis
+    - - 20000000.0
+      - 50000000.0
+wandb:
+  entity: Huizerd
+  project: tinycmax
+runid: eio65zrj
+checkpoint: latest
+save_dir: checkpoints
+deletes: []

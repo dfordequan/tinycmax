@@ -1,5 +1,4 @@
 defaults:
-  - overrides
   - hydra: no_logging
   - _self_
 

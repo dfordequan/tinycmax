@@ -30,5 +30,4 @@ if __name__ == "__main__":
     # reduce-overhead is much faster than default
     compiled_network = torch.compile(network, fullgraph=True, mode="reduce-overhead")
 
-    # TODO: test on some fake or real data
     print("Now test on some data!")
