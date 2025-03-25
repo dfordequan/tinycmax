@@ -14,9 +14,18 @@ class RerunVisualizer:
     Live visualizer using Rerun.
     """
 
-    def __init__(self, app_id, server, web, compression, time_window, blueprint):
+    def __init__(self, app_id, log_dir, server, mode, compression, time_window, blueprint):
         rr.init(app_id)
-        rr.serve_web() if web else rr.connect_tcp(server)
+        if mode == "connect":
+            rr.connect_tcp(server)
+        elif mode == "serve":
+            rr.serve_web()
+        elif mode == "save":
+            log_dir = Path(log_dir)
+            log_dir.mkdir(exist_ok=True, parents=True)
+            rr.save(log_dir / f"{app_id}.rrd")
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
         self.compression = compression
         self.counter = 0
@@ -56,18 +65,21 @@ class RerunVisualizer:
         rr.log(name, rr.Scalar(scalar))
 
 
-class ImageVisualizer:
-    def __init__(self, root_dir, names, format):
+class FileVisualizer:
+    def __init__(self, root_dir, names, image_format, time_window):
         self.root_dir = Path(root_dir)
-        self.format = format
+        self.image_format = image_format
+        self.time_window = time_window / 1e6
         shutil.rmtree(self.root_dir) if self.root_dir.exists() else None
         for name in names:
             (self.root_dir / name).mkdir(exist_ok=True, parents=True)
 
         self.counter = 0
+        self.time = 0
 
     def set_counter(self):
         self.counter += 1
+        self.time = self.counter * self.time_window
 
     def event_frame(self, frame, name="events"):
         image = event_frame_to_image(frame)
@@ -82,8 +94,8 @@ class ImageVisualizer:
 
     def scalar(self, name, scalar):
         if (self.root_dir / name).exists():
-            with open(self.root_dir / name / "data.txt", "a") as f:
-                f.write(f"{self.counter:05d},{scalar}\n")
+            with open(self.root_dir / name / "data.csv", "a") as f:
+                f.write(f"{self.counter:05d},{self.time},{','.join([str(s) for s in scalar])}\n")
 
     def save_image(self, name, image):
         if (self.root_dir / name).exists():

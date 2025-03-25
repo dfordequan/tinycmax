@@ -1,6 +1,6 @@
 from lightning.pytorch.callbacks import Callback
 
-from tinycmax.visualizer import ImageVisualizer, RerunVisualizer
+from tinycmax.visualizer import FileVisualizer, RerunVisualizer
 
 
 class Visualizer(Callback):
@@ -32,11 +32,11 @@ class Visualizer(Callback):
 
 class LiveVisualizer(Visualizer):
 
-    def __init__(self, app_id, server, web, compression, time_window, blueprint=None):
-        self.visualizer = RerunVisualizer(app_id, server, web, compression, time_window, blueprint)
+    def __init__(self, app_id, log_dir, server, mode, compression, time_window, blueprint=None):
+        self.visualizer = RerunVisualizer(app_id, log_dir, server, mode, compression, time_window, blueprint)
 
 
-class ImageLogger(Visualizer):
+class FileLogger(Visualizer):
 
-    def __init__(self, root_dir, keys, format):
-        self.visualizer = ImageVisualizer(root_dir, keys, format)
+    def __init__(self, root_dir, keys, image_format, time_window):
+        self.visualizer = FileVisualizer(root_dir, keys, image_format, time_window)

@@ -1,8 +1,9 @@
 visualizer:
   _target_: tinycmax.callbacks.LiveVisualizer
   app_id: ${...name}
+  log_dir: logs/rerun
   server: 100.127.176.98:9876  # replace with your ip
-  web: true  # if false then use server ip above
+  mode: connect  # connect, serve, save (uses log_file)
   compression: png  # jpeg, png, false (to turn off)
   time_window: ${...datamodule.time_window}
 
